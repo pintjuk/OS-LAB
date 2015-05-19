@@ -10,31 +10,57 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <assert.h>
+
+/* bool stuff */
 #define true ( 1 )
 #define false ( 0 )
 typedef int bool;
-pid_t childpid;
+
+/* id of current forground process */
 pid_t f_proc=-1;
+
+/* maximum length of a comand or an argument */
 #define WLEN 30
+/* maximum length of lien to read */
 #define LLEN 200
+/* maximum amount of arguments */
 #define MAXW 20
+
+/* for pipes */
 #define PIPE_READ_SIDE ( 0 )
 #define PIPE_WRITE_SIDE ( 1 )
 
 FILE *fmemopen(void *buf, size_t size, const char *mode);
+
+/* macro for error checking and printing error messages
+ *
+ * retval:  return value form a function
+ * msg:     message to print in case of error
+ */
 #define CHECKERR(retval, msg) if( -1 == retval) { perror( msg ); fprintf(stderr, "line:%i \n", __LINE__); exit( 1); }
 
+/* creates a pipe and checks for errors
+ */
 void mkpipe(int* p_pipe)
 {
     int return_value = pipe( p_pipe );
+    assert(p_pipe!=NULL);
     CHECKERR(return_value, "cannot create pipe"); 
 }
+
+/* closes a file descriptor and checks for errors
+ */
 void closedisk(int disk){
     int return_value=close(disk);
+    assert(disk>=0);
     CHECKERR(return_value, "cannot close file discriptor");
 }
 
+/* checks the status of terminated processes
+ */
 void checkProcStat(int status){
+    pid_t childpid=0;
     if( WIFEXITED( status ) )
     {
         int child_status = WEXITSTATUS( status );
@@ -55,6 +81,14 @@ void checkProcStat(int status){
     }
 }
 
+/* converts integer to a string
+ *
+ * str:     pointer to where the string should be wrighten
+ * len:     length of the alocate space for the strings
+ * val:     integer to converts
+ * ofset:   the ofset from str where minigful text starts
+ *          will be wrighen to where this points 
+ */
 void getDecStr (char* str, const int len, int val, int* ofset)
 {
   unsigned int i;
@@ -94,6 +128,8 @@ void getDecStr (char* str, const int len, int val, int* ofset)
   str[len-1] = '\0';
 }
 
+/* interupt handler for SIGINT for the main process
+ */
 void inthandler(int sig){
     if(f_proc!=-1)
     {
@@ -106,6 +142,8 @@ void inthandler(int sig){
     }
 }
 
+/* interput handler for SIGCHLD for the main process
+ */
 void chldhandler(int sig){
     int pid;
     char buffer [12];
@@ -118,7 +156,11 @@ void chldhandler(int sig){
     }
 }
 
-void waitfor(const int x){
+/* wait for process x to termenate while blocking
+ *
+ * x:   pid of te process to wait for
+ */
+void waitfor(const unsigned int x){
     int waitresult;
     int status;
     while(-1==(waitresult=waitpid(x, &status, 0)))
@@ -136,6 +178,12 @@ void waitfor(const int x){
     checkProcStat(status);
 }
 
+/* Help function that gegesters an interput handler
+ *
+ * signal_code:     code of the signal
+ * sig:             signal handler function pointer
+ * flags:             flags
+ */
 void register_sighandler( int signal_code, void (*handler)(int sig), int flags )
 {
     int return_value;
@@ -152,36 +200,25 @@ void register_sighandler( int signal_code, void (*handler)(int sig), int flags )
     }
 }
 
-/*
-reads one line from stdin and splits words at white spaces
-
-car should be a pointer of a list of pointers to where the worlds should be wrighten
-*/
-void readline(char** vwords,int* wc){
-    char buf[LLEN];
-    FILE* line;
+/* reads one line from stdin and splits words at white spaces
+ *
+ * vwords:  where to whright comands and arguments
+ *          chould point to word
+ */
+int readline(char** vwords,int* wc){
     int next_char=0;
     int iword=0;
     int ichar=0;
     bool quotemode=false;
     bool escape=false;
-    if(NULL==fgets(buf, sizeof(buf), stdin)){
-        perror("faild to read line");
-        (*wc=0);
-        return;
-    }
-    if(NULL==(line = fmemopen(buf, strlen(buf), "r")))
-    {
-        perror("faild fmemopen");
-        (*wc)=0;
-        return;
-    }
     (*wc)=0;
-    while(EOF!=next_char)
+  
+    while(true)
     {
-        next_char=fgetc(line);
+        next_char=fgetc(stdin);
         if((' ' == (char) next_char ||
-           '\n'== (char) next_char) && !quotemode)
+            EOF == next_char ||
+           '\n' == (char) next_char) && !quotemode)
         {
             if(ichar>0)
             {
@@ -190,18 +227,16 @@ void readline(char** vwords,int* wc){
                 (*wc)++;
                 iword++;
             }
-        }
-        else if(EOF == next_char){
-            if(ichar>0){
-                (*wc)++;
-                vwords[iword][ichar]='\0';
-                vwords[iword+1]=NULL;
-            }
-            else
+            if('\n'== (char) next_char)
             {
                 vwords[iword]=NULL;
+                return 0;
             }
-            break;       
+            if(EOF == next_char)
+            {
+                vwords[iword]=NULL;
+                return 1;
+            }
         }
         else if('\\'== (char) next_char&&!escape)
         {
@@ -216,13 +251,12 @@ void readline(char** vwords,int* wc){
             vwords[iword][ichar]=(char) next_char;
             ichar++;
             escape=false;
-
         }
 
         if(iword >= (MAXW-1))
         {
             vwords[MAXW-1]=NULL;
-            break;
+            return 0;
         }
         if(ichar >= WLEN)
         {
@@ -232,7 +266,6 @@ void readline(char** vwords,int* wc){
             continue;
         }
     }
-   fclose(line);
 }
 
 /*
@@ -259,6 +292,7 @@ int execchild(char* vwords[], bool bg,  struct fileDisc* pipes, char* altcomands
     time_t oldtime;
     time_t newtime;
     int i;
+    pid_t childpid;
     childpid = fork();
     if(0==childpid){
         if(pipes!=NULL)
@@ -438,41 +472,52 @@ void reap_all(){
     }
 }
 
+void cleanexit()
+{
+    int return_value=kill(0, SIGINT);
+    CHECKERR(return_value, "Faild kill(0, SIGINT)");
+}
+
 int main()
 {
     int return_value;
    register_sighandler(SIGINT, inthandler, 0);
-/*#ifdef SIGDET*/
+#ifdef SIGDET
    register_sighandler(SIGCHLD, chldhandler,SA_RESTART|SA_NOCLDSTOP);
-/*#endif */
-    while(!feof(stdin)){
+#endif
+    while(!feof(stdin))
+    {
         char cwdbuf[100];
         char words[MAXW][WLEN];
         char* vwords[MAXW];
         int wc;
         int i;
-        for(i=0; i<MAXW+1; i++){
+        for(i=0; i<MAXW; i++)
+        {
             vwords[i]=words[i];
         }
 
 #ifndef SIGDET
-        /*reap_all();*/
+        reap_all();
 #endif
         getcwd(cwdbuf, sizeof(cwdbuf));
         printf("%s > ",cwdbuf);
 
-        readline(vwords, &wc);
+        if(readline(vwords, &wc)){
+            printf("\nReached EOF\n");
+            cleanexit();
+        }
         if(wc==0)
         {
             continue;
         }
         if(!strcmp(vwords[0], "exit"))
         {
-            return_value=kill(0, SIGINT);
-            CHECKERR(return_value, "Faild kill(0, SIGINT)");
-            continue;
+            cleanexit();  
+            return 1;
         }
-        if(!strcmp(vwords[0], "cd")){
+        if(!strcmp(vwords[0], "cd"))
+        {
             return_value=chdir(vwords[1]); 
             CHECKERR(return_value, "Faild chdir");
             continue;
